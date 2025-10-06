@@ -873,10 +873,13 @@ class CapitalGainsCalculator:
                     )
                     disposal_quantity -= available_quantity
                     proceeds_amount -= available_quantity * disposal_price
-                    current_price = current_amount / current_quantity
-                    amount_delta = available_quantity * current_price
-                    current_quantity -= available_quantity
-                    current_amount -= amount_delta
+                    if current_quantity > 0:
+                        current_price = current_amount / current_quantity
+                        amount_delta = available_quantity * current_price
+                        current_quantity -= available_quantity
+                        current_amount -= amount_delta
+                    else:
+                        amount_delta = Decimal(0)
                     if current_quantity == 0:
                         assert round_decimal(current_amount, 23) == 0, (
                             f"current amount {current_amount}"
@@ -923,10 +926,13 @@ class CapitalGainsCalculator:
             )
             disposal_quantity -= available_quantity
             proceeds_amount -= available_quantity * disposal_price
-            current_price = current_amount / current_quantity
-            amount_delta = available_quantity * current_price
-            current_quantity -= available_quantity
-            current_amount -= amount_delta
+            if current_quantity > 0:
+                current_price = current_amount / current_quantity
+                amount_delta = available_quantity * current_price
+                current_quantity -= available_quantity
+                current_amount -= amount_delta
+            else:
+                amount_delta = Decimal(0)
             if current_quantity == 0:
                 assert round_decimal(current_amount, 10) == 0, (
                     f"current amount {current_amount}"

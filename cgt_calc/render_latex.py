@@ -35,11 +35,13 @@ def render_calculations(
         extensions=["jinja2.ext.loopcontrols"],
     )
     template = latex_template_env.get_template(TEMPLATE_NAME)
+    import datetime
     output_text = template.render(
         report=report,
         round_decimal=round_decimal,
         strip_zeros=strip_zeros,
         Decimal=Decimal,
+        datetime=datetime,
     )
     generated_file_fd, generated_file = tempfile.mkstemp(suffix=".tex")
     os.write(generated_file_fd, output_text.encode())

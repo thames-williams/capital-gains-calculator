@@ -415,6 +415,17 @@ class CapitalGainsReport:
 
         return total
 
+    def total_dividend_taxes_paid(self) -> Decimal:
+        """Total dividend taxes paid at source."""
+        total = Decimal(0)
+        for item in self._filter_calculation_log(
+            self.calculation_log_yields, RuleType.DIVIDEND
+        ):
+            assert item.dividend is not None
+            if not item.dividend.is_interest:
+                total += -item.dividend.tax_at_source
+        return total
+
     def total_dividend_taxes_in_tax_treaties_amount(self) -> Decimal:
         """Total taxes to be reclaimed due to tax treaties."""
         total = Decimal(0)
@@ -485,9 +496,82 @@ class CapitalGainsReport:
                     " Take a look at the symbols with unknown unrealized gains above"
                     " and factor in their prices.\n"
                 )
+        
+        # For 2024 tax year, show period split
+        if self.tax_year == 2024:
+            split_date = datetime.date(2024, 10, 30)
+            
+            # Calculate period totals
+            period1_acquisition_count = 0
+            period1_disposal_count = 0
+            period1_proceeds = Decimal(0)
+            period1_costs = Decimal(0)
+            period1_gain = Decimal(0)
+            period1_loss = Decimal(0)
+            period2_acquisition_count = 0
+            period2_disposal_count = 0
+            period2_proceeds = Decimal(0)
+            period2_costs = Decimal(0)
+            period2_gain = Decimal(0)
+            period2_loss = Decimal(0)
+            
+            for date_index, symbol_dict in self.calculation_log.items():
+                for symbol, entries in symbol_dict.items():
+                    if symbol.startswith("sell$"):
+                        overall_disposed = round_decimal(sum(e.amount for e in entries), 2)
+                        overall_gain = round_decimal(sum(e.gain for e in entries), 2)
+                        overall_allowable = round_decimal(sum(e.allowable_cost for e in entries), 2)
+                        
+                        if date_index < split_date:
+                            period1_disposal_count += 1
+                            period1_proceeds += overall_disposed
+                            period1_costs += overall_allowable
+                            if overall_gain > 0:
+                                period1_gain += overall_gain
+                            else:
+                                period1_loss += -overall_gain
+                        else:
+                            period2_disposal_count += 1
+                            period2_proceeds += overall_disposed
+                            period2_costs += overall_allowable
+                            if overall_gain > 0:
+                                period2_gain += overall_gain
+                            else:
+                                period2_loss += -overall_gain
+                    elif symbol.startswith("buy$") or symbol.startswith("spin-off$"):
+                        overall_quantity = sum(e.quantity for e in entries)
+                        if overall_quantity > 0:
+                            if date_index < split_date:
+                                period1_acquisition_count += 1
+                            else:
+                                period2_acquisition_count += 1
+            
+            out += "\n--- Period Split for 2024-25 Tax Year ---\n"
+            out += "Period 1 (06 April 2024 - 29 October 2024):\n"
+            out += f"  Number of acquisitions: {period1_acquisition_count}\n"
+            out += f"  Number of disposals: {period1_disposal_count}\n"
+            out += f"  Disposal proceeds: £{period1_proceeds}\n"
+            out += f"  Allowable costs: £{period1_costs}\n"
+            out += f"  Capital gain: £{period1_gain}\n"
+            out += f"  Capital loss: £{period1_loss}\n"
+            out += f"  Net capital gain: £{period1_gain - period1_loss}\n"
+            out += "\nPeriod 2 (30 October 2024 - 05 April 2025):\n"
+            out += f"  Number of acquisitions: {period2_acquisition_count}\n"
+            out += f"  Number of disposals: {period2_disposal_count}\n"
+            out += f"  Disposal proceeds: £{period2_proceeds}\n"
+            out += f"  Allowable costs: £{period2_costs}\n"
+            out += f"  Capital gain: £{period2_gain}\n"
+            out += f"  Capital loss: £{period2_loss}\n"
+            out += f"  Net capital gain: £{period2_gain - period2_loss}\n"
+            out += "-------------------------------------------\n\n"
+        
         out += (
             "Total dividends proceeds: "
             f"£{round_decimal(self.total_dividends_amount(), 2)}\n"
+        )
+        out += (
+            "Total dividends taxes paid: "
+            f"£{round_decimal(self.total_dividend_taxes_paid(), 2)}\n"
         )
         if self.dividend_allowance is not None:
             out += (

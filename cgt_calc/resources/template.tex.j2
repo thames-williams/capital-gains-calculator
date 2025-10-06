@@ -1,9 +1,29 @@
 \documentclass{article}
 \usepackage[utf8]{inputenc}
-\usepackage[margin=3cm]{geometry}
-\setlength{\parindent}{0pt} %--don't indent paragraphs
+\usepackage[T1]{fontenc}
+\usepackage{newpxtext,newpxmath}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{fancyhdr}
+
+%# Define colors
+\definecolor{gaincolor}{RGB}{0,128,0}
+\definecolor{losscolor}{RGB}{178,34,34}
+\definecolor{headercolor}{RGB}{41,128,185}
+
+%# Page style
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{CGT Report \VAR{ report.tax_year }-\VAR{ ("{:02d}".format((report.tax_year + 1) % 100)) }}
+\fancyhead[R]{\today}
+\fancyfoot[C]{Page \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+\setlength{\parindent}{0pt}
 \begin{document}
-\centerline{\Large\bfseries Capital Gains Tax Calculations for \VAR{ report.tax_year }-\VAR{ ("{:02d}".format((report.tax_year + 1) % 100)) }}
 
 \BLOCK{ set total_gain = namespace(value=Decimal(0)) }
 \BLOCK{ set total_loss = namespace(value=Decimal(0)) }
@@ -13,7 +33,37 @@
 \BLOCK{ set interest_count = namespace(value=0) }
 \BLOCK{ set eri_count = namespace(value=0) }
 
-\section*{Captail Gains Events}
+%# Title page
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+{\Huge\bfseries Capital Gains Tax\\Calculations Report\par}
+\vspace{1cm}
+{\Large Tax Year \VAR{ report.tax_year }-\VAR{ ("{:02d}".format((report.tax_year + 1) % 100)) }\par}
+\vspace{2cm}
+{\large Generated: \today\par}
+\vfill
+\end{titlepage}
+
+%# For 2024 tax year, track split periods
+\BLOCK{ if report.tax_year == 2024 }
+\BLOCK{ set period1_gain = namespace(value=Decimal(0)) }
+\BLOCK{ set period1_loss = namespace(value=Decimal(0)) }
+\BLOCK{ set period1_acquisition_count = namespace(value=0) }
+\BLOCK{ set period1_disposal_count = namespace(value=0) }
+\BLOCK{ set period1_proceeds = namespace(value=Decimal(0)) }
+\BLOCK{ set period1_costs = namespace(value=Decimal(0)) }
+\BLOCK{ set period2_gain = namespace(value=Decimal(0)) }
+\BLOCK{ set period2_loss = namespace(value=Decimal(0)) }
+\BLOCK{ set period2_acquisition_count = namespace(value=0) }
+\BLOCK{ set period2_disposal_count = namespace(value=0) }
+\BLOCK{ set period2_proceeds = namespace(value=Decimal(0)) }
+\BLOCK{ set period2_costs = namespace(value=Decimal(0)) }
+\BLOCK{ set split_date = datetime.date(2024, 10, 30) }
+\BLOCK{ endif }
+
+\clearpage
+\section*{Capital Gains Events}
 
 \BLOCK{ for date_index, symbol_dict in report.calculation_log.items() }
 
@@ -24,7 +74,7 @@
     \BLOCK{ set is_disposal = True }
 \BLOCK{ elif symbol.startswith("buy$") }
     \BLOCK{ set symbol = symbol[4:] }
-    \BLOCK{ set is_aquisition = True }
+    \BLOCK{ set is_acquisition = True }
 \BLOCK{ elif symbol.startswith("spin-off$") }
     \BLOCK{ set symbol = symbol[9:] }
     \BLOCK{ set is_spin_off = True }
@@ -37,7 +87,20 @@
 \BLOCK{ if is_disposal }
     \BLOCK{ set overall_disposed = round_decimal(entries|sum(attribute="amount"), 2) }
     \BLOCK{ set overall_gain = round_decimal(entries|sum(attribute="gain"), 2) }
+    \BLOCK{ set overall_allowable = round_decimal(entries|sum(attribute="allowable_cost"), 2) }
     \BLOCK{ set disposal_count.value = disposal_count.value + 1 }
+    %# Track for 2024 split periods
+    \BLOCK{ if report.tax_year == 2024 }
+        \BLOCK{ if date_index < split_date }
+            \BLOCK{ set period1_disposal_count.value = period1_disposal_count.value + 1 }
+            \BLOCK{ set period1_proceeds.value = period1_proceeds.value + overall_disposed }
+            \BLOCK{ set period1_costs.value = period1_costs.value + overall_allowable }
+        \BLOCK{ else }
+            \BLOCK{ set period2_disposal_count.value = period2_disposal_count.value + 1 }
+            \BLOCK{ set period2_proceeds.value = period2_proceeds.value + overall_disposed }
+            \BLOCK{ set period2_costs.value = period2_costs.value + overall_allowable }
+        \BLOCK{ endif }
+    \BLOCK{ endif }
     \subsubsection*{
         Disposal \VAR{ disposal_count.value }: \VAR{ strip_zeros(overall_quantity) } units of \VAR{ symbol } for £\VAR{ "{:,}".format(overall_disposed) }
         (£\VAR{ "{:,}".format(round_decimal(overall_disposed/overall_quantity, 2)) }/unit)%
@@ -46,20 +109,44 @@
         \BLOCK{ endif }
     }
     \BLOCK{ if overall_gain > 0 -}
-        Chargeable \textbf{gain} is £\VAR{ "{:,}".format(overall_gain) }
+        Chargeable \textbf{\textcolor{gaincolor}{gain}} is \textcolor{gaincolor}{£\VAR{ "{:,}".format(overall_gain) }}
 
         \BLOCK{ set total_gain.value = total_gain.value + overall_gain }
-        Capital gain to date is £\VAR{ "{:,}".format(total_gain.value) }
+        %# Track for 2024 split periods
+        \BLOCK{ if report.tax_year == 2024 }
+            \BLOCK{ if date_index < split_date }
+                \BLOCK{ set period1_gain.value = period1_gain.value + overall_gain }
+            \BLOCK{ else }
+                \BLOCK{ set period2_gain.value = period2_gain.value + overall_gain }
+            \BLOCK{ endif }
+        \BLOCK{ endif }
+        Capital gain to date is \textcolor{gaincolor}{£\VAR{ "{:,}".format(total_gain.value) }}
     \BLOCK{ else }
-        Chargeable \textbf{loss} is £\VAR{ "{:,}".format(-overall_gain) }
+        Chargeable \textbf{\textcolor{losscolor}{loss}} is \textcolor{losscolor}{£\VAR{ "{:,}".format(-overall_gain) }}
 
         \BLOCK{ set total_loss.value = total_loss.value - overall_gain }
-        Capital loss to date is £\VAR{ "{:,}".format(total_loss.value) }
+        %# Track for 2024 split periods
+        \BLOCK{ if report.tax_year == 2024 }
+            \BLOCK{ if date_index < split_date }
+                \BLOCK{ set period1_loss.value = period1_loss.value - overall_gain }
+            \BLOCK{ else }
+                \BLOCK{ set period2_loss.value = period2_loss.value - overall_gain }
+            \BLOCK{ endif }
+        \BLOCK{ endif }
+        Capital loss to date is \textcolor{losscolor}{£\VAR{ "{:,}".format(total_loss.value) }}
     \BLOCK{ endif }
-\BLOCK{ elif is_aquisition } % if is_aquisition
+\BLOCK{ elif is_acquisition } % if is_acquisition
     \BLOCK{ set acquisition_cost = round_decimal(entries[0].allowable_cost, 2) }
     \BLOCK{ if overall_quantity > 0 }
         \BLOCK{ set acquisition_count.value = acquisition_count.value + 1 }
+        %# Track for 2024 split periods
+        \BLOCK{ if report.tax_year == 2024 }
+            \BLOCK{ if date_index < split_date }
+                \BLOCK{ set period1_acquisition_count.value = period1_acquisition_count.value + 1 }
+            \BLOCK{ else }
+                \BLOCK{ set period2_acquisition_count.value = period2_acquisition_count.value + 1 }
+            \BLOCK{ endif }
+        \BLOCK{ endif }
         \subsubsection*{
             Acquisition \VAR{ acquisition_count.value }: \VAR{ strip_zeros(overall_quantity) } units of \VAR{ symbol } for £\VAR{ "{:,}".format(acquisition_cost) }
             (£\VAR{ "{:,}".format(round_decimal(acquisition_cost/overall_quantity, 2)) }/unit)%
@@ -74,6 +161,14 @@
     \BLOCK{ set acquisition_cost = round_decimal(entries[0].allowable_cost, 2) }
     \BLOCK{ if overall_quantity > 0 }
         \BLOCK{ set acquisition_count.value = acquisition_count.value + 1 }
+        %# Track for 2024 split periods
+        \BLOCK{ if report.tax_year == 2024 }
+            \BLOCK{ if date_index < split_date }
+                \BLOCK{ set period1_acquisition_count.value = period1_acquisition_count.value + 1 }
+            \BLOCK{ else }
+                \BLOCK{ set period2_acquisition_count.value = period2_acquisition_count.value + 1 }
+            \BLOCK{ endif }
+        \BLOCK{ endif }
         \subsubsection*{
             Spin-off adjustment \VAR{ acquisition_count.value }: \VAR{ entries[0].spin_off.source } cost adjusted because of \VAR{ entries[0].spin_off.dest } shares spinned off
         }
@@ -90,6 +185,8 @@
 
 \begin{enumerate}
 \BLOCK{ for entry in entries }
+%# Skip zero-quantity entries (artifacts from bed and breakfast matching)
+\BLOCK{ if entry.quantity > 0 }
 \item \textbf{\VAR{ entry.rule_type.name.replace("_", " ") }}. Quantity: \VAR{ strip_zeros(entry.quantity) },
 \BLOCK{ if is_disposal }
     \BLOCK{ if entry.quantity < overall_quantity }
@@ -103,15 +200,15 @@
     \BLOCK{ endif }
     £\VAR{ "{:,}".format(round_decimal(entry.allowable_cost, 2)) },
     \BLOCK{ if entry.gain > 0}
-        \mbox{gain: £\VAR{ "{:,}".format(round_decimal(entry.gain, 2)) }.}
+        \mbox{\textcolor{gaincolor}{gain: £\VAR{ "{:,}".format(round_decimal(entry.gain, 2)) }}.}
     \BLOCK{ else }
-        \mbox{loss: £\VAR{ "{:,}".format(round_decimal(-entry.gain, 2)) }.}
+        \mbox{\textcolor{losscolor}{loss: £\VAR{ "{:,}".format(round_decimal(-entry.gain, 2)) }}.}
     \BLOCK{ endif }
 \BLOCK{ elif is_spin_off }
     original cost of \VAR{ entry.spin_off.source }: £\VAR{ "{:,}".format(round_decimal(-entry.amount, 2))}, after spin-off: £\VAR{ "{:,}".format(round_decimal(entry.new_pool_cost, 2))}
 \BLOCK{ elif is_eri }
     original cost of \VAR{ symbol }: £\VAR{ "{:,}".format(round_decimal(-entry.amount, 2))}, after income distribution: £\VAR{ "{:,}".format(round_decimal(entry.new_pool_cost, 2))}%
-\BLOCK{ else } % if is_aquisition
+\BLOCK{ else } % if is_acquisition
     actual cost: £\VAR{ "{:,}".format(round_decimal(-entry.amount, 2)) }.
 \BLOCK{ endif}
 
@@ -124,20 +221,21 @@
 \BLOCK{ if entry.new_quantity > 0 },
     new pool cost: £\VAR{ "{:,}".format(round_decimal(entry.new_pool_cost, 2)) }
     (£\VAR{ "{:,}".format(round_decimal(entry.new_pool_cost/entry.new_quantity, 2)) }/unit)%
-    \BLOCK{ if is_aquisition and entry.spin_off}
+    \BLOCK{ if is_acquisition and entry.spin_off}
 
     Cost basis calculated based on cost of \VAR{entry.spin_off.source} share pool from which \VAR{ symbol } shares were spinned off%
     \BLOCK{ endif }
-    \BLOCK{ if is_aquisition and entry.eri}
+    \BLOCK{ if is_acquisition and entry.eri}
         \BLOCK{ set eri_cost = round_decimal(entry.eri.price * entry.quantity, 2) }
         \BLOCK{ set eri_date = entry.eri.date.strftime("%d %b %Y") }
 
     Cost basis increased by £\VAR{ "{:,}".format(eri_cost)}
     (£\VAR{ "{:,}".format(round_decimal(entry.eri.price, 4)) }/unit)%
-    , due to exccess reported income on \mbox{\VAR{ eri_date }}%
+    , due to excess reported income on \mbox{\VAR{ eri_date }}%
     \BLOCK{ endif }
 \BLOCK{ endif }.
 
+\BLOCK{ endif }
 \BLOCK{ endfor}
 \end{enumerate}
 
@@ -147,7 +245,7 @@
 
 \BLOCK{ if report.calculation_log_yields }
     \clearpage
-    \section*{Interest and Diviends Events}
+    \section*{Interest and Dividends Events}
 
     \BLOCK{ for date_index, symbol_dict in report.calculation_log_yields.items() }
 
@@ -192,7 +290,7 @@
         \BLOCK{ endif }
         \BLOCK{ set eri_income = round_decimal(entries[0].amount, 2) }
         \BLOCK{ set eri_count.value = eri_count.value + 1 }
-        \textbf{Excess Reported Income Distribution \VAR{ eri_count.value }}: \VAR{ symbol + type_str } for £\VAR{ "{:,}".format(eri_income) }
+        \textbf{Excess Reported Income Distribution \VAR{ eri_count.value }:} \VAR{ symbol + type_str } for £\VAR{ "{:,}".format(eri_income) }
         (£\VAR{ "{:,}".format(round_decimal(entries[0].eri.price, 4)) }/unit)%
     \BLOCK{ endif }
 
@@ -203,27 +301,85 @@
 
 \clearpage
 \section*{Overall - Capital Gains}
-\subsection*{Number of acquisitions: \VAR{ acquisition_count.value }}
-\subsection*{Number of disposals: \VAR{ disposal_count.value }}
-\subsection*{Total disposal proceeds: £\VAR{ "{:,}".format(report.disposal_proceeds) }}
-\subsection*{Total capital gain before loss: £\VAR{ "{:,}".format(total_gain.value) }}
-\subsection*{Total capital loss: £\VAR{ "{:,}".format(total_loss.value) }}
-\subsection*{Total capital gain after loss: £\VAR{ "{:,}".format(total_gain.value - total_loss.value) }}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Number of Acquisitions & \VAR{ acquisition_count.value } \\
+Number of Disposals & \VAR{ disposal_count.value } \\
+\midrule
+Total Disposal Proceeds & £\VAR{ "{:,}".format(report.disposal_proceeds) } \\
+Total Allowable Costs & £\VAR{ "{:,}".format(report.allowable_costs) } \\
+\midrule
+Capital Gain Before Loss & \textcolor{gaincolor}{£\VAR{ "{:,}".format(total_gain.value) }} \\
+Capital Loss & \textcolor{losscolor}{£\VAR{ "{:,}".format(total_loss.value) }} \\
+\midrule
+\textbf{Net Capital Gain} & \textbf{£\VAR{ "{:,}".format(total_gain.value - total_loss.value) }} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%# For 2024, show period breakdowns
+\BLOCK{ if report.tax_year == 2024 }
+
+\vspace{1cm}
+\subsection*{Period Breakdown (HMRC Split for 2024-25)}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{Period 1} & \textbf{Period 2} \\
+ & \textbf{(06 Apr - 29 Oct)} & \textbf{(30 Oct - 05 Apr)} \\
+\midrule
+Number of Acquisitions & \VAR{ period1_acquisition_count.value } & \VAR{ period2_acquisition_count.value } \\
+Number of Disposals & \VAR{ period1_disposal_count.value } & \VAR{ period2_disposal_count.value } \\
+\midrule
+Disposal Proceeds & £\VAR{ "{:,}".format(period1_proceeds.value) } & £\VAR{ "{:,}".format(period2_proceeds.value) } \\
+Allowable Costs & £\VAR{ "{:,}".format(period1_costs.value) } & £\VAR{ "{:,}".format(period2_costs.value) } \\
+\midrule
+Capital Gain & \textcolor{gaincolor}{£\VAR{ "{:,}".format(period1_gain.value) }} & \textcolor{gaincolor}{£\VAR{ "{:,}".format(period2_gain.value) }} \\
+Capital Loss & \textcolor{losscolor}{£\VAR{ "{:,}".format(period1_loss.value) }} & \textcolor{losscolor}{£\VAR{ "{:,}".format(period2_loss.value) }} \\
+\midrule
+\textbf{Net Capital Gain} & \textbf{£\VAR{ "{:,}".format(period1_gain.value - period1_loss.value) }} & \textbf{£\VAR{ "{:,}".format(period2_gain.value - period2_loss.value) }} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\BLOCK{ endif }
+
 \vspace{2em}
 \section*{Overall - Dividends and Interests}
-\subsection*{Number of dividend distributions: \VAR{ dividend_count.value }}
-\subsection*{Number of interest transactions: \VAR{ interest_count.value }}
-\subsection*{Number of excess reported income distributions: \VAR{ eri_count.value }}
-\subsection*{Total amount of dividends proceeds: £\VAR{ "{:,}".format(round_decimal(report.total_dividends_amount(), 2)) }}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Number of Dividend Distributions & \VAR{ dividend_count.value } \\
+Number of Interest Transactions & \VAR{ interest_count.value } \\
+Number of Excess Reported Income Distributions & \VAR{ eri_count.value } \\
+\midrule
+Total Dividends Proceeds & £\VAR{ "{:,}".format(round_decimal(report.total_dividends_amount(), 2)) } \\
 \BLOCK{ if report.total_eri_amount(False) > 0 }
-\subsubsection*{   (including £\VAR{ "{:,}".format(round_decimal(report.total_eri_amount(False), 2))} from excess reported income distributions)}
+\hspace{1em} (including £\VAR{ "{:,}".format(round_decimal(report.total_eri_amount(False), 2))} from ERI distributions) & \\
 \BLOCK{ endif }
-\subsection*{Total amount of dividends tax allowance due to double taxation treaties £\VAR{ "{:,}".format(round_decimal(report.total_dividend_taxes_in_tax_treaties_amount(), 2)) }}
-\subsection*{Total amount of dividends tax yearly allowance £\VAR{ "{:,}".format(round_decimal(report.dividend_allowance or Decimal(), 2)) }}
-\subsection*{Total amount of taxable dividends proceeds: £\VAR{ "{:,}".format(round_decimal(report.total_dividend_taxable_gain(), 2)) }}
-\subsection*{Total amount of UK interests proceeds: £\VAR{ "{:,}".format(report.total_uk_interest) }}
-\subsection*{Total amount of foreign interests proceeds: £\VAR{ "{:,}".format(report.total_foreign_interest) }}
+Total Dividends Taxes Paid & £\VAR{ "{:,}".format(round_decimal(report.total_dividend_taxes_paid(), 2)) } \\
+Tax Allowance (Double Taxation Treaties) & £\VAR{ "{:,}".format(round_decimal(report.total_dividend_taxes_in_tax_treaties_amount(), 2)) } \\
+Dividends Tax Yearly Allowance & £\VAR{ "{:,}".format(round_decimal(report.dividend_allowance or Decimal(), 2)) } \\
+\midrule
+\textbf{Taxable Dividends Proceeds} & \textbf{£\VAR{ "{:,}".format(round_decimal(report.total_dividend_taxable_gain(), 2)) }} \\
+\midrule
+UK Interest Proceeds & £\VAR{ "{:,}".format(report.total_uk_interest) } \\
+Foreign Interest Proceeds & £\VAR{ "{:,}".format(report.total_foreign_interest) } \\
 \BLOCK{ if report.total_eri_amount(True) > 0 }
-\subsubsection*{   (including £\VAR{ "{:,}".format(round_decimal(report.total_eri_amount(True), 2))} from excess reported income distributions)}
+\hspace{1em} (including £\VAR{ "{:,}".format(round_decimal(report.total_eri_amount(True), 2))} from ERI distributions) & \\
 \BLOCK{ endif }
+\bottomrule
+\end{tabular}
+\end{table}
 \end{document}
