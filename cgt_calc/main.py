@@ -640,6 +640,9 @@ class CapitalGainsCalculator:
             bed_and_breakfast_fees = (
                 acquisition.fees * bnb_acquisition.quantity / acquisition.quantity
             )
+            bed_and_breakfast_allowable_cost = (
+                acquisition.amount * bnb_acquisition.quantity / acquisition.quantity
+            )
             calculation_entries.append(
                 CalculationEntry(
                     rule_type=RuleType.BED_AND_BREAKFAST,
@@ -648,7 +651,7 @@ class CapitalGainsCalculator:
                     new_quantity=position.quantity + bnb_acquisition.quantity,
                     new_pool_cost=position.amount + bnb_acquisition.amount,
                     fees=bed_and_breakfast_fees,
-                    allowable_cost=acquisition.amount,
+                    allowable_cost=bed_and_breakfast_allowable_cost,
                     eri=bnb_acquisition.eri,
                 )
             )
