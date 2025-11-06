@@ -7,22 +7,20 @@ from collections import defaultdict
 import datetime
 import decimal
 from decimal import Decimal
-import importlib.metadata
 import logging
-from pathlib import Path
 import sys
+from typing import TYPE_CHECKING
 
 from . import render_latex
 from .args_parser import create_parser
 from .const import (
     BED_AND_BREAKFAST_DAYS,
     CAPITAL_GAIN_ALLOWANCES,
-    COUNTRY_CURRENCY,
     DIVIDEND_ALLOWANCES,
     DIVIDEND_DOUBLE_TAXATION_RULES,
     ERI_TAX_DATE_DELTA,
     INTERNAL_START_DATE,
-    MIN_DAYS_IN_YEAR,
+    UK_CURRENCY,
 )
 from .currency_converter import CurrencyConverter
 from .current_price_fetcher import CurrentPriceFetcher
@@ -31,6 +29,7 @@ from .exceptions import (
     AmountMissingError,
     CalculatedAmountDiscrepancyError,
     CalculationError,
+    CgtError,
     InvalidTransactionError,
     PriceMissingError,
     QuantityNotPositiveError,
@@ -41,9 +40,9 @@ from .isin_converter import IsinConverter
 from .model import (
     ActionType,
     BrokerTransaction,
-    CalcuationType,
     CalculationEntry,
     CalculationLog,
+    CalculationType,
     CapitalGainsReport,
     Dividend,
     ExcessReportedIncome,
@@ -59,10 +58,14 @@ from .model import (
     RuleType,
     SpinOff,
 )
-from .parsers import read_broker_transactions, read_initial_prices
+from .parsers import read_broker_transactions
+from .setup_logging import setup_logging
 from .spin_off_handler import SpinOffHandler
 from .transaction_log import add_to_list, has_key
 from .util import approx_equal, round_decimal
+
+if TYPE_CHECKING:
+    import argparse
 
 LOGGER = logging.getLogger(__name__)
 
@@ -96,18 +99,18 @@ def _approx_equal_price_rounding(
     quantity_on_record: Decimal,
     price_on_record: Decimal,
     fees_on_record: Decimal,
-    calcuationType: CalcuationType,
+    calculation_type: CalculationType,
 ) -> bool:
     calculated_amount = Decimal(0)
     calculated_price = Decimal(0)
-    if calcuationType is CalcuationType.ACQUISITION:
+    if calculation_type is CalculationType.ACQUISITION:
         calculated_amount = Decimal(-1) * (
             quantity_on_record * price_on_record + fees_on_record
         )
         calculated_price = (
             Decimal(-1) * amount_on_record - fees_on_record
         ) / quantity_on_record
-    elif calcuationType is CalcuationType.DISPOSAL:
+    elif calculation_type is CalculationType.DISPOSAL:
         calculated_amount = quantity_on_record * price_on_record - fees_on_record
         calculated_price = (amount_on_record + fees_on_record) / quantity_on_record
     in_acceptable_range = abs(calculated_price - price_on_record) < Decimal("0.0001")
@@ -223,7 +226,7 @@ class CapitalGainsCalculator:
                 quantity,
                 price,
                 transaction.fees,
-                CalcuationType.ACQUISITION,
+                CalculationType.ACQUISITION,
             ):
                 raise CalculatedAmountDiscrepancyError(transaction, -calculated_amount)
             amount = -amount
@@ -360,7 +363,7 @@ class CapitalGainsCalculator:
             quantity,
             price,
             transaction.fees,
-            CalcuationType.DISPOSAL,
+            CalculationType.DISPOSAL,
         ):
             raise CalculatedAmountDiscrepancyError(transaction, calculated_amount)
         add_to_list(
@@ -444,14 +447,18 @@ class CapitalGainsCalculator:
         symbols = self.isin_converter.get_symbols(transaction.isin)
         for symbol in symbols:
             for report_date, report_by_symbol in self.eris.items():
-                if (
-                    symbol in report_by_symbol
-                    and abs((report_date - transaction.date).days) < MIN_DAYS_IN_YEAR
-                ):
+                if symbol in report_by_symbol and report_date == transaction.date:
+                    previous_price = report_by_symbol[symbol].price
+                    if approx_equal(previous_price, price):
+                        LOGGER.warning(
+                            "Skipping duplicated ERI transaction: %s", transaction
+                        )
+                        return
                     raise InvalidTransactionError(
                         transaction,
-                        "A reporting period within less than a year for this "
-                        f"ticker already exist at {report_date}",
+                        f"A conflicting ERI report at {report_date} for "
+                        f"{symbol} of £{price} has been found at "
+                        f"{report_date} of £{previous_price}",
                     )
 
             self.eris[transaction.date][symbol] = ExcessReportedIncome(
@@ -558,7 +565,7 @@ class CapitalGainsCalculator:
                 amount = get_amount_or_fail(transaction)
                 new_balance += amount
             elif transaction.action is ActionType.REINVEST_DIVIDENDS:
-                print(f"WARNING: Ignoring unsupported action: {transaction.action}")
+                LOGGER.warning("Ignoring unsupported action: %s", transaction.action)
             else:
                 raise InvalidTransactionError(
                     transaction, f"Action not processed({transaction.action})"
@@ -651,8 +658,8 @@ class CapitalGainsCalculator:
                     new_quantity=position.quantity + bnb_acquisition.quantity,
                     new_pool_cost=position.amount + bnb_acquisition.amount,
                     fees=bed_and_breakfast_fees,
-                    allowable_cost=bed_and_breakfast_allowable_cost,
-                    eri=bnb_acquisition.eri,
+                    allowable_cost=acquisition.amount,
+                    eris=bnb_acquisition.eris,
                 )
             )
         self.portfolio[symbol] += Position(
@@ -786,15 +793,19 @@ class CapitalGainsCalculator:
 
         # Bed and breakfast rule next
         if disposal_quantity > 0:
+            eris = []
             eri = self.get_eri(symbol, date_index)
-            eri_distribution = None
+            if eri:
+                eris.append(eri)
 
             for i in range(BED_AND_BREAKFAST_DAYS):
                 search_index = date_index + datetime.timedelta(days=i + 1)
 
-                # ERI are distributed annually so only 1 eri can match in a bed
-                # a breakfast period (30 days)
-                eri = eri or self.get_eri(symbol, search_index)
+                # ERI are distributed annually but when a fund close we might have
+                # multiple ERI distribution in close succession
+                eri = self.get_eri(symbol, search_index)
+                if eri:
+                    eris.append(eri)
                 if has_key(self.acquisition_list, search_index, symbol):
                     acquisition = self.acquisition_list[search_index][symbol]
 
@@ -825,10 +836,12 @@ class CapitalGainsCalculator:
                         == 0
                     ):
                         continue
-                    print(
-                        f"WARNING: Bed and breakfasting for {symbol}."
-                        f" Disposed on {date_index}"
-                        f" and acquired again on {search_index}"
+                    LOGGER.warning(
+                        "Bed and breakfasting for %s. "
+                        "Disposed on %s and acquired again on %s",
+                        symbol,
+                        date_index,
+                        search_index,
                     )
                     available_quantity = min(
                         disposal_quantity,
@@ -848,12 +861,14 @@ class CapitalGainsCalculator:
                     # ERI needs to be reported when doing bed and breakfast as if you
                     # held the stocks at the reporting end date.
                     # https://www.rawknowledge.ltd/eri-explained-four-tricky-questions-answered/
-                    if eri:
+                    total_dist_amount = Decimal(0)
+                    for eri in eris:
                         eri_distribution = ExcessReportedIncomeDistribution(
                             price=eri.price,
                             amount=available_quantity * eri.price,
                             quantity=available_quantity,
                         )
+                        total_dist_amount += eri_distribution.amount
                         if self.date_in_tax_year(eri.distribution_date):
                             self.eris_distribution[eri.distribution_date][symbol] += (
                                 eri_distribution
@@ -870,8 +885,8 @@ class CapitalGainsCalculator:
                         bed_and_breakfast_gain,
                         disposal_price,
                         acquisition_price,
-                        f", added_excess_income: {eri_distribution.amount}"
-                        if eri_distribution
+                        f", added_excess_income: {total_dist_amount}"
+                        if total_dist_amount > 0
                         else "",
                     )
                     disposal_quantity -= available_quantity
@@ -892,10 +907,9 @@ class CapitalGainsCalculator:
                         search_index,
                         symbol,
                         available_quantity,
-                        amount_delta
-                        + (eri_distribution.amount if eri_distribution else Decimal(0)),
+                        amount_delta + total_dist_amount,
                         Decimal(0),
-                        eri,
+                        eris,
                     )
                     calculation_entries.append(
                         CalculationEntry(
@@ -1013,7 +1027,7 @@ class CapitalGainsCalculator:
             fees=Decimal(0),
             new_pool_cost=new_amount,
             allowable_cost=allowable_cost,
-            eri=eri,
+            eris=[eri],
         )
 
     def process_interests(self) -> None:
@@ -1044,7 +1058,7 @@ class CapitalGainsCalculator:
             gbp_amount = self.currency_converter.to_gbp(
                 foreign_amount.amount, foreign_amount.currency, date
             )
-            if foreign_amount.currency == COUNTRY_CURRENCY:
+            if foreign_amount.currency == UK_CURRENCY:
                 self.total_uk_interest += gbp_amount
                 rule_prefix = "interestUK"
             else:
@@ -1078,7 +1092,7 @@ class CapitalGainsCalculator:
                     LOGGER.warning(
                         "Cannot apply taxation treaty for bond fund %s", symbol
                     )
-                elif foreign_amount.currency != COUNTRY_CURRENCY:
+                elif foreign_amount.currency != UK_CURRENCY:
                     assert tax.currency == foreign_amount.currency, (
                         f"Not matching currency for dividend {foreign_amount.currency} "
                         f"and its tax {tax.currency}"
@@ -1241,8 +1255,8 @@ class CapitalGainsCalculator:
                         continue
 
                     if date_index >= tax_year_start_index:
-                        eri = maybe_entry.eri
-                        assert eri is not None
+                        eris = maybe_entry.eris
+                        assert eris
                         calculation_log[date_index][
                             f"excess-reported-income${symbol}"
                         ] = [maybe_entry]
@@ -1266,20 +1280,22 @@ class CapitalGainsCalculator:
                             fees=Decimal(0),
                             new_pool_cost=data.amount,
                             allowable_cost=None,
-                            eri=ExcessReportedIncome(
-                                price=data.price,
-                                symbol=symbol,
-                                date=date_index - ERI_TAX_DATE_DELTA,
-                                distribution_date=date_index,
-                                is_interest=is_interest,
-                            ),
+                            eris=[
+                                ExcessReportedIncome(
+                                    price=data.price,
+                                    symbol=symbol,
+                                    date=date_index - ERI_TAX_DATE_DELTA,
+                                    distribution_date=date_index,
+                                    is_interest=is_interest,
+                                ),
+                            ],
                         )
                     ]
 
         self.process_dividends()
         self.process_interests()
 
-        print("\nSecond pass completed")
+        print("Second pass completed")
         allowance = CAPITAL_GAIN_ALLOWANCES.get(self.tax_year)
         dividend_allowance = DIVIDEND_ALLOWANCES.get(self.tax_year)
 
@@ -1325,38 +1341,25 @@ class CapitalGainsCalculator:
         )
 
 
-def main() -> int:
-    """Run main function."""
-    # Throw exception on accidental float usage
-    decimal.getcontext().traps[decimal.FloatOperation] = True
-    args = create_parser().parse_args()
-
-    if args.version:
-        print(f"cgt-calc {importlib.metadata.version(__package__)}")
-        return 0
-
-    if args.report == "":
-        print("error: report name can't be empty")
-        return 1
-
-    default_logging_level = logging.DEBUG if args.verbose else logging.WARNING
-    logging.basicConfig(level=default_logging_level)
+def calculate_cgt(args: argparse.Namespace) -> None:
+    """Perform all the computations."""
 
     # Read data from input files
     broker_transactions = read_broker_transactions(
-        args.schwab,
-        args.schwab_award,
-        args.schwab_equity_award_json,
-        args.trading212,
-        args.mssb,
-        args.sharesight,
-        args.raw,
-        args.vanguard,
-        args.eri_raw_file,
+        freetrade_transactions_file=args.freetrade_file,
+        schwab_transactions_file=args.schwab_file,
+        schwab_awards_transactions_file=args.schwab_award_file,
+        schwab_equity_award_json_transactions_file=args.schwab_equity_award_json,
+        trading212_transactions_folder=args.trading212_dir,
+        mssb_transactions_folder=args.mssb_dir,
+        sharesight_transactions_folder=args.sharesight_dir,
+        raw_transactions_file=args.raw_file,
+        vanguard_transactions_file=args.vanguard_file,
+        eri_raw_file=args.eri_raw_file,
     )
     currency_converter = CurrencyConverter(args.exchange_rates_file)
-    initial_prices = InitialPrices(read_initial_prices(args.initial_prices))
     price_fetcher = CurrentPriceFetcher(currency_converter)
+    initial_prices = InitialPrices(args.initial_prices_file)
     spin_off_handler = SpinOffHandler(args.spin_offs_file)
     isin_converter = IsinConverter(args.isin_translation_file)
 
@@ -1383,12 +1386,47 @@ def main() -> int:
 
     # Generate PDF report.
     if not args.no_report:
-        render_latex.render_calculations(
+        render_latex.render_pdf(
             report,
-            output_path=Path(args.report),
+            output_path=args.output,
             skip_pdflatex=args.no_pdflatex,
         )
     print("All done!")
+
+
+def main() -> int:
+    """Run main function."""
+
+    # Enable colourised logging.
+    setup_logging()
+
+    # Throw exception on accidental float usage
+    decimal.getcontext().traps[decimal.FloatOperation] = True
+
+    parser = create_parser()
+
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return 0
+
+    args = parser.parse_args()
+
+    logging_level = logging.DEBUG if args.verbose else logging.WARNING
+    logging.getLogger().setLevel(logging_level)
+
+    try:
+        calculate_cgt(args)
+    except CgtError as err:
+        if args.verbose:
+            LOGGER.exception("Exception:")
+        else:
+            # Print error without traceback
+            LOGGER.error("%s", err)
+        return 1
+    except Exception:
+        # Last-resort catch for unexpected exceptions
+        LOGGER.critical("Unexpected error!")
+        LOGGER.exception("Details:")
 
     return 0
 

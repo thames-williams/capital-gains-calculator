@@ -18,16 +18,20 @@ from dataclasses import InitVar, dataclass
 import datetime
 from decimal import Decimal
 import json
-from pathlib import Path
-from typing import Any, Final
+import logging
+from typing import TYPE_CHECKING, Any, Final
 
 from cgt_calc.const import TICKER_RENAMES
 from cgt_calc.exceptions import ParsingError
 from cgt_calc.model import ActionType, BrokerTransaction
 from cgt_calc.util import round_decimal
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 OPTIONAL_DETAILS_NAME: Final = "Details"
 FIELD_TO_SCHEMA: Final = {"transactions": 1, "Transactions": 2}
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -88,7 +92,7 @@ ROUND_DIGITS = 6
 JsonRowType = Any  # type: ignore[explicit-any]
 
 
-def action_from_str(label: str) -> ActionType:
+def action_from_str(label: str, file: Path) -> ActionType:
     """Convert string label to ActionType."""
     if label in {"Buy"}:
         return ActionType.BUY
@@ -111,10 +115,16 @@ def action_from_str(label: str) -> ActionType:
     if label in {"Stock Plan Activity", "Deposit"}:
         return ActionType.STOCK_ACTIVITY
 
-    if label in ["Qualified Dividend", "Cash Dividend"]:
+    if label in ["Qualified Dividend", "Cash Dividend", "Dividend"]:
         return ActionType.DIVIDEND
 
-    if label in ["NRA Tax Adj", "NRA Withholding", "Foreign Tax Paid"]:
+    if label in [
+        "NRA Tax Adj",
+        "NRA Withholding",
+        "Foreign Tax Paid",
+        "Tax Reversal",
+        "Tax Withholding",
+    ]:
         return ActionType.DIVIDEND_TAX
 
     if label == "ADR Mgmt Fee":
@@ -141,7 +151,7 @@ def action_from_str(label: str) -> ActionType:
     if label == "Wire Funds Received":
         return ActionType.WIRE_FUNDS_RECEIVED
 
-    raise ParsingError("schwab transactions", f"Unknown action: {label}")
+    raise ParsingError(file, f"Unknown action: {label}")
 
 
 def _decimal_from_str(price_str: str) -> Decimal:
@@ -181,12 +191,12 @@ def _is_integer(number: Decimal) -> bool:
 class SchwabTransaction(BrokerTransaction):
     """Represent single Schwab transaction."""
 
-    def __init__(self, row: JsonRowType, file: str, field_names: FieldNames) -> None:
+    def __init__(self, row: JsonRowType, file: Path, field_names: FieldNames) -> None:
         """Create a new SchwabTransaction from a JSON row."""
         names = field_names
         description = row[names.description]
         self.raw_action = row[names.action]
-        action = action_from_str(self.raw_action)
+        action = action_from_str(self.raw_action, file)
         symbol = row.get(names.symbol)
         symbol = TICKER_RENAMES.get(symbol, symbol)
         if symbol != "GOOG":
@@ -294,6 +304,11 @@ class SchwabTransaction(BrokerTransaction):
                     ):
                         quantity = (amount + fees) / price
 
+        elif action in [ActionType.DIVIDEND, ActionType.DIVIDEND_TAX]:
+            date = datetime.datetime.strptime(row[names.date], "%m/%d/%Y").date()
+            price = None
+            amount = _decimal_from_str(row[names.amount])
+            description = self.raw_action
         else:
             raise ParsingError(
                 file, f"Parsing for action {row[names.action]} is not implemented!"
@@ -341,45 +356,43 @@ class SchwabTransaction(BrokerTransaction):
 
 
 def read_schwab_equity_award_json_transactions(
-    transactions_file: str,
+    transactions_file: Path,
 ) -> list[BrokerTransaction]:
     """Read Schwab transactions from file."""
-    try:
-        with Path(transactions_file).open(encoding="utf-8") as json_file:
-            try:
-                data = json.load(json_file, parse_float=Decimal, parse_int=Decimal)
-            except json.decoder.JSONDecodeError as exception:
-                raise ParsingError(
-                    transactions_file,
-                    "Cloud not parse content as JSON",
-                ) from exception
 
-            for field_name, schema_version in FIELD_TO_SCHEMA.items():
-                if field_name in data:
-                    fields = FieldNames(schema_version)
-                    break
-            if not fields:
-                raise ParsingError(
-                    transactions_file,
-                    f"Expected top level field ({', '.join(FIELD_TO_SCHEMA.keys())}) "
-                    "not found: the JSON data is not in the expected format",
-                )
+    with transactions_file.open(encoding="utf-8") as json_file:
+        print(f"Parsing {transactions_file}...")
+        try:
+            data = json.load(json_file, parse_float=Decimal, parse_int=Decimal)
+        except json.decoder.JSONDecodeError as exception:
+            raise ParsingError(
+                transactions_file,
+                "Cloud not parse content as JSON",
+            ) from exception
 
-            if not isinstance(data[fields.transactions], list):
-                raise ParsingError(
-                    transactions_file,
-                    f"'{fields.transactions}' is not a list: the JSON data is not "
-                    "in the expected format",
-                )
+        for field_name, schema_version in FIELD_TO_SCHEMA.items():
+            if field_name in data:
+                fields = FieldNames(schema_version)
+                break
+        if not fields:
+            raise ParsingError(
+                transactions_file,
+                f"Expected top level field ({', '.join(FIELD_TO_SCHEMA.keys())}) "
+                "not found: the JSON data is not in the expected format",
+            )
 
-            transactions = [
-                SchwabTransaction(transac, transactions_file, fields)
-                for transac in data[fields.transactions]
-                # Skip as not relevant for CGT
-                if transac[fields.action] not in {"Journal", "Wire Transfer"}
-            ]
-            transactions.reverse()
-            return list(transactions)
-    except FileNotFoundError:
-        print(f"WARNING: Couldn't locate Schwab transactions file({transactions_file})")
-        return []
+        if not isinstance(data[fields.transactions], list):
+            raise ParsingError(
+                transactions_file,
+                f"'{fields.transactions}' is not a list: the JSON data is not "
+                "in the expected format",
+            )
+
+        transactions = [
+            SchwabTransaction(transac, transactions_file, fields)
+            for transac in data[fields.transactions]
+            # Skip as not relevant for CGT
+            if transac[fields.action] not in {"Journal", "Wire Transfer"}
+        ]
+        transactions.reverse()
+        return list(transactions)
