@@ -1,5 +1,6 @@
 """Render PDF report with LaTeX."""
 
+import datetime
 from decimal import Decimal
 from pathlib import Path
 import shutil
@@ -36,8 +37,6 @@ def render_pdf(
         extensions=["jinja2.ext.loopcontrols"],
     )
     template = latex_template_env.get_template(LATEX_TEMPLATE_RESOURCE)
-    template = latex_template_env.get_template(TEMPLATE_NAME)
-    import datetime
     output_text = template.render(
         report=report,
         round_decimal=round_decimal,

@@ -225,13 +225,15 @@
 
     Cost basis calculated based on cost of \VAR{entry.spin_off.source} share pool from which \VAR{ symbol } shares were spinned off%
     \BLOCK{ endif }
-    \BLOCK{ if is_acquisition and entry.eri}
-        \BLOCK{ set eri_cost = round_decimal(entry.eri.price * entry.quantity, 2) }
-        \BLOCK{ set eri_date = entry.eri.date.strftime("%d %b %Y") }
+    \BLOCK{ if is_acquisition }
+        \BLOCK{ for eri in entry.eris }
+            \BLOCK{ set eri_cost = round_decimal(eri.price * entry.quantity, 2) }
+            \BLOCK{ set eri_date = eri.date.strftime("%d %b %Y") }
 
     Cost basis increased by £\VAR{ "{:,}".format(eri_cost)}
-    (£\VAR{ "{:,}".format(round_decimal(entry.eri.price, 4)) }/unit)%
+    (£\VAR{ "{:,}".format(round_decimal(eri.price, 4)) }/unit)%
     , due to excess reported income on \mbox{\VAR{ eri_date }}%
+        \BLOCK{ endfor }
     \BLOCK{ endif }
 \BLOCK{ endif }.
 
@@ -245,7 +247,6 @@
 
 \BLOCK{ if report.calculation_log_yields }
     \clearpage
-    \section*{Interest and Dividends Events}
     \section*{Interest and Dividends Events}
 
     \BLOCK{ for date_index, symbol_dict in report.calculation_log_yields.items() }
@@ -291,8 +292,8 @@
         \BLOCK{ endif }
         \BLOCK{ set eri_income = round_decimal(entries[0].amount, 2) }
         \BLOCK{ set eri_count.value = eri_count.value + 1 }
-        \textbf{Excess Reported Income Distribution \VAR{ eri_count.value }:} \VAR{ symbol + type_str } for £\VAR{ "{:,}".format(eri_income) }
-        (£\VAR{ "{:,}".format(round_decimal(entries[0].eri.price, 4)) }/unit)%
+        \textbf{Excess Reported Income Distribution \VAR{ eri_count.value }}: \VAR{ symbol + type_str } for £\VAR{ "{:,}".format(eri_income) }
+        (£\VAR{ "{:,}".format(round_decimal(entries[0].eris[0].price, 4)) }/unit)%
     \BLOCK{ endif }
 
     \BLOCK{ endfor }
